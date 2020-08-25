@@ -37,16 +37,20 @@ rm -f mr-out*
 
 echo '***' Starting wc test.
 
-timeout -k 2s 180s ../mrmaster ../pg*txt &
+# timeout -k 2s 180s ../mrmaster ../pg*txt &
+../mrmaster ../pg*txt &
 
 # give the master time to create the sockets.
 sleep 1
 
 # start multiple workers.
-timeout -k 2s 180s ../mrworker ../../mrapps/wc.so &
-timeout -k 2s 180s ../mrworker ../../mrapps/wc.so &
-timeout -k 2s 180s ../mrworker ../../mrapps/wc.so &
+#timeout -k 2s 180s ../mrworker ../../mrapps/wc.so &
+#timeout -k 2s 180s ../mrworker ../../mrapps/wc.so &
+#timeout -k 2s 180s ../mrworker ../../mrapps/wc.so &
 
+../mrworker ../../mrapps/wc.so &
+../mrworker ../../mrapps/wc.so &
+../mrworker ../../mrapps/wc.so &
 # wait for one of the processes to exit.
 # under bash, this waits for all processes,
 # including the master.
@@ -79,12 +83,12 @@ rm -f mr-out*
 
 echo '***' Starting indexer test.
 
-timeout -k 2s 180s ../mrmaster ../pg*txt &
+../mrmaster ../pg*txt &
 sleep 1
 
 # start multiple workers
-timeout -k 2s 180s ../mrworker ../../mrapps/indexer.so &
-timeout -k 2s 180s ../mrworker ../../mrapps/indexer.so
+../mrworker ../../mrapps/indexer.so &
+../mrworker ../../mrapps/indexer.so
 
 sort mr-out* | grep . > mr-indexer-all
 if cmp mr-indexer-all mr-correct-indexer.txt
@@ -103,11 +107,11 @@ echo '***' Starting map parallelism test.
 
 rm -f mr-out* mr-worker*
 
-timeout -k 2s 180s ../mrmaster ../pg*txt &
+../mrmaster ../pg*txt &
 sleep 1
 
-timeout -k 2s 180s ../mrworker ../../mrapps/mtiming.so &
-timeout -k 2s 180s ../mrworker ../../mrapps/mtiming.so
+../mrworker ../../mrapps/mtiming.so &
+../mrworker ../../mrapps/mtiming.so
 
 NT=`cat mr-out* | grep '^times-' | wc -l | sed 's/ //g'`
 if [ "$NT" != "2" ]
@@ -133,11 +137,11 @@ echo '***' Starting reduce parallelism test.
 
 rm -f mr-out* mr-worker*
 
-timeout -k 2s 180s ../mrmaster ../pg*txt &
+../mrmaster ../pg*txt &
 sleep 1
 
-timeout -k 2s 180s ../mrworker ../../mrapps/rtiming.so &
-timeout -k 2s 180s ../mrworker ../../mrapps/rtiming.so
+../mrworker ../../mrapps/rtiming.so &
+../mrworker ../../mrapps/rtiming.so
 
 NT=`cat mr-out* | grep '^[a-z] 2' | wc -l | sed 's/ //g'`
 if [ "$NT" -lt "2" ]
@@ -160,30 +164,30 @@ rm -f mr-out*
 echo '***' Starting crash test.
 
 rm -f mr-done
-(timeout -k 2s 180s ../mrmaster ../pg*txt ; touch mr-done ) &
+(../mrmaster ../pg*txt ; touch mr-done ) &
 sleep 1
 
 # start multiple workers
-timeout -k 2s 180s ../mrworker ../../mrapps/crash.so &
+../mrworker ../../mrapps/crash.so &
 
 # mimic rpc.go's masterSock()
 SOCKNAME=/var/tmp/824-mr-`id -u`
 
 ( while [ -e $SOCKNAME -a ! -f mr-done ]
   do
-    timeout -k 2s 180s ../mrworker ../../mrapps/crash.so
+    ../mrworker ../../mrapps/crash.so
     sleep 1
   done ) &
 
 ( while [ -e $SOCKNAME -a ! -f mr-done ]
   do
-    timeout -k 2s 180s ../mrworker ../../mrapps/crash.so
+    ../mrworker ../../mrapps/crash.so
     sleep 1
   done ) &
 
 while [ -e $SOCKNAME -a ! -f mr-done ]
 do
-  timeout -k 2s 180s ../mrworker ../../mrapps/crash.so
+  ../mrworker ../../mrapps/crash.so
   sleep 1
 done
 

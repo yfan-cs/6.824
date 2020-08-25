@@ -37,6 +37,8 @@ func main() {
 	//
 	intermediate := []mr.KeyValue{}
 	for _, filename := range os.Args[2:] {
+		// debug purpose:
+		fmt.Printf("Opended file: %s\n", filename)
 		file, err := os.Open(filename)
 		if err != nil {
 			log.Fatalf("cannot open %v", filename)

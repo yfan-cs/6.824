@@ -23,6 +23,29 @@ type ExampleReply struct {
 }
 
 // Add your RPC definitions here.
+type AssignArgs struct {
+// empty struct
+}
+
+type AssignReply struct {
+	TaskType string // "Map" or "Reduce"
+	RNum int // hashed number for reduce
+	MNum int // map task number
+	NReduce int // number of buckerts 
+	Filename string // filename for map tasks
+}
+
+
+type FinishArgs struct {
+	TaskType string // "Map" or "reduce"
+	RNum int // hased number for reduce
+	MNum int // map task number
+	NewRNums []int // Reduce tasks after competion of the Map task
+}
+
+type FinishReply struct {
+// empty struct
+}
 
 
 // Cook up a unique-ish UNIX-domain socket name
