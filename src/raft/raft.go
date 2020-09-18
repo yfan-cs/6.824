@@ -77,6 +77,7 @@ type Raft struct {
 	// timestamp for the last communication with leader (for followers)
 	// or elect time stamp for candidates
 	leadTimestamp time.Time
+	electTimeout int64 // timeout for election
 
 	// Persistent state on all servers:
 	currentTerm int    // latest term server has seen
@@ -187,6 +188,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	    rf.state = FOLLOWER
 	    rf.votedFor = -1
 	    rf.leadTimestamp = time.Now()
+	    rf.electTimeout = 500 + rand.Int63n(1000)
 	}
 
 	reply.Term = rf.currentTerm
@@ -200,6 +202,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// update the timestamp after comparing the terms
 	rf.leadTimestamp = time.Now()
+	rf.electTimeout = 500 + rand.Int63n(1000)
 
 	// step2
 	if len(rf.log) - 1 < args.PrevLogIndex || 
@@ -246,6 +249,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	    rf.state = FOLLOWER
 	    rf.votedFor = -1
 	    rf.leadTimestamp = time.Now()
+	    rf.electTimeout = 500 + rand.Int63n(1000)
 	}
 	
 	// then, Receiver Implementation for RequestVote RPC
@@ -262,6 +266,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	    reply.VoteGranted = true
 	    rf.votedFor = args.CandidateId
 	    rf.leadTimestamp = time.Now()
+	    rf.electTimeout = 500 + rand.Int63n(1000)
 	}
 }
 
@@ -373,6 +378,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = FOLLOWER
 	rf.applyCh = applyCh
 	rf.leadTimestamp = time.Now()
+	rf.electTimeout = 500 + rand.Int63n(1000)
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	rf.log = make([]logEntry, 0)
@@ -393,16 +399,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 // goroutine that will kick off leader election periodically
 func (rf *Raft) periodicCheck() {
-	// election timeout: 500 - 1500ms for heartbeat ~100ms
-	// or do we want to reset this timeout?
-	electTimeout := 500 + rand.Int63n(1000)
 	for !rf.killed() {
 	    // followers or candidates do this periodic check
 	    rf.mu.Lock()
 	    if rf.state != LEADER {
 		// no need to do this periodic check for the leader
 	        timeElapsed := time.Now().Sub(rf.leadTimestamp).Milliseconds() 
-	        if timeElapsed > electTimeout {
+	        if timeElapsed > rf.electTimeout {
 		    // kick off the leader election
 		    go rf.elect()
 	        }
@@ -422,6 +425,7 @@ func (rf *Raft) elect() {
 	rf.votedFor = rf.me
 	rf.voteCnt = 1
 	rf.leadTimestamp = time.Now()
+	rf.electTimeout = 500 + rand.Int63n(1000)
 	args := RequestVoteArgs{
 	    Term: rf.currentTerm,
 	    CandidateId: rf.me,
@@ -445,6 +449,7 @@ func (rf *Raft) elect() {
 			rf.state = FOLLOWER
 			rf.votedFor = -1
 			rf.leadTimestamp = time.Now()
+			rf.electTimeout = 500 + rand.Int63n(1000)
 		    }
 		    if rf.state == CANDIDATE && rf.currentTerm == args.Term {
 		        if reply.VoteGranted {
@@ -488,6 +493,7 @@ func (rf *Raft) sendHeartBeat() {
 			rf.state = FOLLOWER
 			rf.votedFor = -1
 			rf.leadTimestamp = time.Now()
+			rf.electTimeout = 500 + rand.Int63n(1000)
 		    }
 		}
 	    } (i)
