@@ -68,9 +68,6 @@ type Raft struct {
 	// state a Raft server must maintain.
 	state int    // leader/follower/candidate
 
-	// vote counts for candidate
-	voteCnt int
-
 	// apply channel
 	applyCh chan ApplyMsg
 	
@@ -193,7 +190,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Term = rf.currentTerm
 	
-	// TODO: Receiver implementation
 	// step1
 	if args.Term < rf.currentTerm {
 	    reply.Success = false
@@ -210,7 +206,35 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	    reply.Success = false
 	    return
 	} 
-	// TODO: step 3 to step 5
+
+	// step3
+	matchedCnt := 0 // cnt of existing entries that match the new ones
+	for i, entry := range args.Entries {
+	    if len(rf.log) <= args.PrevLogIndex+i+1 ||
+		rf.log[args.PrevLogIndex+i+1].Term != entry.Term {
+	        break
+	    }
+	    matchedCnt += 1
+	} 
+	// delete unmatched entries: [args.PrevLogIndex+matchedCnt+1, end)
+	rf.log = rf.log[:args.PrevLogIndex + matchedCnt + 1]
+
+	// step4, append any new entries not already in the log
+	for i, entry := range args.Entries {
+	    if i + 1 > matchedCnt {
+	        rf.log = append(rf.log, entry)
+	    }
+	} 
+
+	// step5
+	if args.LeaderCommit > rf.commitIndex {
+	    if args.LeaderCommit < len(rf.log) - 1 {
+	        rf.commitIndex = args.LeaderCommit
+	    } else {
+	        rf.commitIndex = len(rf.log) - 1
+	    }
+	}
+	reply.Success = true
 }
 
 //
@@ -330,8 +354,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	index, term, isLeader = len(rf.log), rf.currentTerm, rf.state == LEADER
+	if isLeader {
+	    // append to local log for the leader
+	    rf.log = append(rf.log, logEntry{Command: command, Term: term})	
+	    // TODO: replicate log to followers:
+	}
 	return index, term, isLeader
 }
 
@@ -423,7 +453,7 @@ func (rf *Raft) elect() {
 	rf.state = CANDIDATE
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
-	rf.voteCnt = 1
+	voteCnt := 1
 	rf.leadTimestamp = time.Now()
 	rf.electTimeout = 500 + rand.Int63n(1000)
 	args := RequestVoteArgs{
@@ -453,14 +483,27 @@ func (rf *Raft) elect() {
 		    }
 		    if rf.state == CANDIDATE && rf.currentTerm == args.Term {
 		        if reply.VoteGranted {
-			    rf.voteCnt += 1
-			    if 2 * rf.voteCnt > len(rf.peers) {
-			        rf.state = LEADER
+			    voteCnt += 1
+			    if 2 * voteCnt > len(rf.peers) {
+				rf.leaderInit()
 			    } 
 			}
 		    }
 		}
 	    } (i)
+	}
+}
+
+func (rf *Raft) leaderInit() {
+	// reinitialize the states in the newly elected leader
+	rf.state = LEADER
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
+	for i := range rf.nextIndex {
+	    rf.nextIndex[i] = len(rf.log)
+	}
+	for i := range rf.matchIndex {
+	    rf.matchIndex[i] = 0
 	}
 }
 
