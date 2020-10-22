@@ -159,21 +159,27 @@ func TestFailAgree2B(t *testing.T) {
 
 	// the leader and remaining follower should be
 	// able to agree despite the disconnected follower.
+	DPrintf("Hello!\n")
 	cfg.one(102, servers-1, false)
 	cfg.one(103, servers-1, false)
 	time.Sleep(RaftElectionTimeout)
 	cfg.one(104, servers-1, false)
 	cfg.one(105, servers-1, false)
 
+	DPrintf("Right before re-connect!\n")
 	// re-connect
 	cfg.connect((leader + 1) % servers)
 
+	DPrintf("Right after re-connect!\n")
 	// the full set of servers should preserve
 	// previous agreements, and be able to agree
 	// on new commands.
 	cfg.one(106, servers, true)
+	DPrintf("Before election timeout!\n")
 	time.Sleep(RaftElectionTimeout)
+	DPrintf("After election timeout!\n")
 	cfg.one(107, servers, true)
+	DPrintf("World!\n")
 
 	cfg.end()
 }
