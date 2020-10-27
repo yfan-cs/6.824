@@ -20,14 +20,12 @@ package raft
 import "sync"
 import "sync/atomic"
 import "../labrpc"
-//import "fmt" // for debug purpose
 
 import "time"          // for timeouts
 import "math/rand"     // for random election timeouts
 
-// import "bytes"
-// import "../labgob"
-
+import "bytes"
+import "../labgob"
 
 
 //
@@ -53,6 +51,9 @@ const (
 	CANDIDATE
 )
 
+const MIN_TIMEOUT = 500   // minimum election timeout in ms
+const MAX_TIMEOUT = 1500  // maximum election timeout in ms
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -68,7 +69,7 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 	state int    // leader/follower/candidate
-
+	
 	// apply channel
 	applyCh chan ApplyMsg
 	
@@ -119,6 +120,7 @@ func (rf *Raft) GetState() (int, bool) {
 //
 func (rf *Raft) persist() {
 	// Your code here (2C).
+
 	// Example:
 	// w := new(bytes.Buffer)
 	// e := labgob.NewEncoder(w)
@@ -126,6 +128,14 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 
@@ -149,6 +159,20 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+	
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	if d.Decode(&rf.currentTerm) != nil ||
+	   d.Decode(&rf.votedFor) != nil ||
+	   d.Decode(&rf.log) != nil {
+	    DPrintf("ERROR when decoding!\n")
+	} else {
+	    // debug
+	    DPrintf("Read currentTerm: %d, votedFor: %d\n", rf.currentTerm, rf.votedFor)
+	    for i, entry := range rf.log {
+	        DPrintf("#%dth log, with command: %v, term: %d\n", i, entry.Command, entry.Term)
+	    }
+	}
 }
 
 //
@@ -180,13 +204,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	
 	// first, rules for servers, All Servers, rule #2:
-	if args.Term > rf.currentTerm {
-	    rf.currentTerm = args.Term
-	    rf.state = FOLLOWER
-	    rf.votedFor = -1
-	    rf.leadTimestamp = time.Now()
-	    rf.electTimeout = 500 + rand.Int63n(1000)
-	}
+	rf.updateCurrentTerm(args.Term)
 
 	reply.Term = rf.currentTerm
 	
@@ -196,9 +214,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	    return
 	}
 
-	// update the timestamp after comparing the terms
-	rf.leadTimestamp = time.Now()
-	rf.electTimeout = 500 + rand.Int63n(1000)
+	if args.LeaderId == rf.votedFor {
+	    rf.leadTimestamp = time.Now()
+	    rf.electTimeout = randElectTimeout()
+	    rf.persist()
+	
+	}
 
 	// step2
 	if len(rf.log) - 1 < args.PrevLogIndex || 
@@ -231,20 +252,27 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	        rf.log = append(rf.log, entry)
 	    }
 	} 
-	/*
+	rf.persist()
 	// debug:
-	DPrintf("Leader: prevLogIndex: %d, prevLogTerm: %d, append entries deatils:\n", args.PrevLogIndex, args.PrevLogTerm)
-	for i, entry := range args.Entries {
-	    DPrintf("Leader: log index: %d, term: %d\n", i + args.PrevLogIndex + 1, entry.Term) 
-	} 
-	DPrintf("Follower %d: log details:\n", rf.me)
-	for i, entry := range rf.log {
-	    DPrintf("Follower %d: Index: %d, Term: %d\n", rf.me, i, entry.Term) 
+	/*
+	if len(args.Entries) > 0 {
+		DPrintf("Leader [%d]: prevLogIndex: %d, prevLogTerm: %d, append entries deatils:\n", args.LeaderId, args.PrevLogIndex, args.PrevLogTerm)
+		for i, entry := range args.Entries {
+		    DPrintf("Leader [%d]: log index: %d, term: %d\n", args.LeaderId, i + args.PrevLogIndex + 1, entry.Term) 
+		} 
+		DPrintf("Follower [%d]: log details:\n", rf.me)
+		for i, entry := range rf.log {
+		    DPrintf("Follower [%d]: log index: %d, term: %d\n", rf.me, i, entry.Term) 
+		}
 	}
 	*/
 
 	// step5
 	if args.LeaderCommit > rf.commitIndex {
+	    // must be args.PrevLogIndex + len(args.Entries)
+	    // cannot just be len(rf.log): when args.Entries is empty
+            // and this follower was a leader before but disconnected, and
+	    // this follower with longer logs. then there is a problem.
 	    if args.LeaderCommit < args.PrevLogIndex + len(args.Entries) {
 	        rf.commitIndex = args.LeaderCommit
 	    } else {
@@ -252,12 +280,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	    }
 	    // the commitIndex is updated, inform the apply() routine:
 	    rf.cond.Broadcast()
+	    // debug
+	    DPrintf("Leader [%d]: commit #%d\n", args.LeaderId, args.LeaderCommit)
+	    DPrintf("Follower [%d]: commit #%d\n", rf.me, rf.commitIndex)
 	}
-	/*
-	// debug
-	DPrintf("Leader #%d: commit #%d\n", args.LeaderId, args.LeaderCommit)
-	DPrintf("Follower #%d: commit #%d\n", rf.me, rf.commitIndex)
-	*/
 	reply.Success = true
 }
 
@@ -292,13 +318,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	
 	// first, rules for servers, All Servers, rule #2:
-	if args.Term > rf.currentTerm {
-	    rf.currentTerm = args.Term
-	    rf.state = FOLLOWER
-	    rf.votedFor = -1
-	    rf.leadTimestamp = time.Now()
-	    rf.electTimeout = 500 + rand.Int63n(1000)
-	}
+	rf.updateCurrentTerm(args.Term)
 	
 	// then, Receiver Implementation for RequestVote RPC
 	
@@ -315,7 +335,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	    reply.VoteGranted = true
 	    rf.votedFor = args.CandidateId
 	    rf.leadTimestamp = time.Now()
-	    rf.electTimeout = 500 + rand.Int63n(1000)
+	    rf.electTimeout = randElectTimeout()
+	    rf.persist()
 	}
 }
 
@@ -385,13 +406,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if isLeader {
 	    // append to local log for the leader
 	    rf.log = append(rf.log, logEntry{Command: command, Term: term})	
+	    rf.persist()
 	    // replicate log to followers:
-	    /*
 	    // Debug
-	    DPrintf("Leader %d: log details:\n", rf.me)
-	    for i, entry := range rf.log {
-		DPrintf("Leader %d: Index: %d, Term: %d\n", rf.me, i, entry.Term)
-	    } */
+	    DPrintf("Leader [%d]: latest log in Start(): index: %d, term: %d, command: %v\n", rf.me, len(rf.log) - 1, rf.log[len(rf.log)-1].Term, command)
 	    go rf.replicateLog()
 	}
 	return index, term, isLeader
@@ -441,7 +459,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = FOLLOWER
 	rf.applyCh = applyCh
 	rf.leadTimestamp = time.Now()
-	rf.electTimeout = 500 + rand.Int63n(1000)
+	rf.electTimeout = randElectTimeout()
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	rf.log = make([]logEntry, 0)
@@ -475,7 +493,7 @@ func (rf *Raft) apply() {
 	for rf.commitIndex <= rf.lastApplied {
 	    rf.cond.Wait()
 	}
-	if rf.commitIndex > rf.lastApplied {
+	for rf.commitIndex > rf.lastApplied {
 	    // should apply log entries
 	    // rule #1 for all servers
 	    rf.lastApplied++
@@ -484,15 +502,13 @@ func (rf *Raft) apply() {
 	        Command: rf.log[rf.lastApplied].Command,
 		CommandIndex: rf.lastApplied,
 	    }
-	    /*
 	    // debug
-	    DPrintf("Server leader(%v) #%d applying #%d log entry in term %d: Command: %v\n", rf.state == LEADER, rf.me, rf.lastApplied, rf.currentTerm, rf.log[rf.lastApplied].Command)
-	
-	    for i, entry := range rf.log {
-		DPrintf("Server leader(%v) #%d log: index: %d, term: %d, command: %v\n", rf.state == LEADER, rf.me, i, entry.Term, entry.Command)
-	    }
-	    */
+	    /*
+	    DPrintf("Server leader(%v) [%d] applying #%d log entry in term %d: Command: %v\n", rf.state == LEADER, rf.me, rf.lastApplied, rf.currentTerm, rf.log[rf.lastApplied].Command)
+	    */	
+	    rf.mu.Unlock()
 	    rf.applyCh <- applyMsg
+	    rf.mu.Lock()
 	}
 	rf.mu.Unlock()
     }
@@ -527,9 +543,10 @@ func (rf *Raft) elect() {
 	rf.state = CANDIDATE
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
+	rf.persist()
 	voteCnt := 1
 	rf.leadTimestamp = time.Now()
-	rf.electTimeout = 500 + rand.Int63n(1000)
+	rf.electTimeout = randElectTimeout()
 	args := RequestVoteArgs{
 	    Term: rf.currentTerm,
 	    CandidateId: rf.me,
@@ -553,7 +570,8 @@ func (rf *Raft) elect() {
 			rf.state = FOLLOWER
 			rf.votedFor = -1
 			rf.leadTimestamp = time.Now()
-			rf.electTimeout = 500 + rand.Int63n(1000)
+			rf.electTimeout = randElectTimeout()
+	                rf.persist()
 		    }
 		    if rf.state == CANDIDATE && rf.currentTerm == args.Term {
 		        if reply.VoteGranted {
@@ -593,7 +611,7 @@ func (rf *Raft) sendHeartBeat() {
         if rf.state == LEADER {
 	    prevLogIndex := rf.nextIndex[i] - 1
 	    prevLogTerm := rf.log[prevLogIndex].Term
-	    args := &AppendEntriesArgs {
+	    args := AppendEntriesArgs {
 	        Term: rf.currentTerm,
 	        LeaderId: rf.me,
 	        PrevLogIndex: prevLogIndex,  
@@ -603,7 +621,7 @@ func (rf *Raft) sendHeartBeat() {
 	    }
 	    go func(i int) {
 	        reply := &AppendEntriesReply{}
-	        if rf.sendAppendEntries(i, args, reply){
+	        if rf.sendAppendEntries(i, &args, reply){
 	            // handle the reply
 	            rf.mu.Lock()
 	            defer rf.mu.Unlock()
@@ -612,8 +630,15 @@ func (rf *Raft) sendHeartBeat() {
 		        rf.state = FOLLOWER
 		        rf.votedFor = -1
 		        rf.leadTimestamp = time.Now()
-		        rf.electTimeout = 500 + rand.Int63n(1000)
+			rf.electTimeout = randElectTimeout()
+	                rf.persist()
+			return
 	            }
+		    if reply.Success {
+		        rf.matchIndex[i] = args.PrevLogIndex + len(args.Entries)
+			rf.nextIndex[i] = rf.matchIndex[i] + 1
+			go rf.updateLeaderCommit(true, rf.currentTerm)
+		    } 
 	        }
 	    } (i)	
         }
@@ -624,16 +649,20 @@ func (rf *Raft) sendHeartBeat() {
 func (rf *Raft) replicateLog() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	if rf.state != LEADER {
+	    return
+	}
 	for i := range rf.peers {
 	    if i == rf.me || len(rf.log) - 1 < rf.nextIndex[i] {
 		continue
 	    }
-	    go rf.replicateLogToFollower(i)
+	    currentTerm := rf.currentTerm
+	    go rf.replicateLogToFollower(i, currentTerm)
 	}
 } 
 
 // replicate log to a certain follwer
-func (rf *Raft) replicateLogToFollower(i int) {
+func (rf *Raft) replicateLogToFollower(i int, currentTerm int) {
     rf.mu.Lock()
     defer rf.mu.Unlock()
     if rf.state != LEADER {
@@ -643,52 +672,49 @@ func (rf *Raft) replicateLogToFollower(i int) {
     prevLogTerm := rf.log[prevLogIndex].Term
     entries := rf.log[rf.nextIndex[i]:]
     args := AppendEntriesArgs {
-        Term: rf.currentTerm,
+	Term: currentTerm,
 	LeaderId: rf.me,
 	PrevLogIndex: prevLogIndex,
 	PrevLogTerm: prevLogTerm,
 	Entries: entries,
 	LeaderCommit: rf.commitIndex,
     }
-    // beacasue of the concurrency, the args should be passed as a copy to the below closure!!!!!
-    go func(args AppendEntriesArgs) {
+    // use another go routine because we may wait on sendAppendEtries.
+    go func() {
         reply := &AppendEntriesReply{}
         if rf.sendAppendEntries(i, &args, reply) {
             rf.mu.Lock()
             defer rf.mu.Unlock()
 	    // rule #2 for all the servers
-	    if reply.Term > rf.currentTerm {
-	        rf.currentTerm = reply.Term
-	        rf.state = FOLLOWER
-	        rf.votedFor = -1
-	        rf.leadTimestamp = time.Now()
-	        rf.electTimeout = 500 + rand.Int63n(1000)
-	        return
-	    }
+	    rf.updateCurrentTerm(reply.Term)
 	    // rule #3 for the leader
 	    if reply.Success {
 	        rf.matchIndex[i] = args.PrevLogIndex + len(args.Entries)
 	        rf.nextIndex[i] = rf.matchIndex[i] + 1
 	        // rule #4 for the leader
-	        go rf.updateLeaderCommit()
+	        // go rf.updateLeaderCommit(false, rf.currentTerm)
+	        go rf.updateLeaderCommit(false, currentTerm)
 	    } else {
 		// if fails because of log inconsistency
 		if args.Term >= reply.Term {
+		    // debug
+		    /*
+		    DPrintf("Follower [%d] failed because of log inconsistency, next index becomes: %d\b", i, rf.nextIndex[i]-1)
+		    */
 	            rf.nextIndex[i]--
-	            go rf.replicateLogToFollower(i)
+	            go rf.replicateLogToFollower(i, currentTerm)
 		}
 	    }
         } else {
 	    // see section 5.3: if followers crash or run slowly,
 	    // or if network packets are lost, the leader retries indefinitely.
-	    go rf.replicateLogToFollower(i)
+	    go rf.replicateLogToFollower(i, currentTerm)
 	}
-    
-    } (args)
+    } ()
 }
 
 // update commitIndex on the leader
-func (rf *Raft) updateLeaderCommit() {
+func (rf *Raft) updateLeaderCommit(isHeartbeat bool, currentTerm int) {
     // rule #4 for the leader
     rf.mu.Lock()
     defer rf.mu.Unlock()
@@ -700,8 +726,13 @@ func (rf *Raft) updateLeaderCommit() {
 	        count++
 	    }
         } 
-        if 2*count > len(rf.peers) && rf.log[N].Term == rf.currentTerm {
+        if 2*count > len(rf.peers) && (rf.log[N].Term == rf.currentTerm || (isHeartbeat && currentTerm == rf.currentTerm && N == len(rf.log) - 1)) {
+	    // debug 
+	    DPrintf("Leader [%d] committed #%d\n", rf.me, N)
             rf.commitIndex = N
+	    // try replicate log immediately here
+	    // wrong, see the stackoverflow thread.
+	    // go rf.replicateLog()
 	    rf.cond.Broadcast()
         } else {
 	    break
@@ -710,3 +741,21 @@ func (rf *Raft) updateLeaderCommit() {
 }
 
 
+/*
+------------------------- Small helper functions ------------------------------
+*/
+
+// rule #2 for all servers:
+func (rf *Raft) updateCurrentTerm(term int) {
+    if term > rf.currentTerm {
+	rf.currentTerm = term
+	rf.state = FOLLOWER
+	rf.votedFor = -1
+	rf.persist()
+	DPrintf("Server [%d] changed to follower in new term [%d]\n", rf.me, rf.currentTerm)
+    } 
+}
+
+func randElectTimeout() int64 {
+    return MIN_TIMEOUT + rand.Int63n(MAX_TIMEOUT - MIN_TIMEOUT)
+}
